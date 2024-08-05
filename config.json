@@ -1,0 +1,14 @@
+{
+    "hidden_dims": [32, 32],
+    "n_steps": 2048,
+    "n_epochs": 10,
+    "batch_size": 128,
+    "policy_lr": 0.0003,
+    "value_lr": 0.0003,
+    "gamma": 0.99,
+    "lmda": 0.97,
+    "clip_ratio": 0.2,
+    "vf_coef": 0.5,
+    "ent_coef": 0.01,
+    "activation_fn": "tanh"
+}

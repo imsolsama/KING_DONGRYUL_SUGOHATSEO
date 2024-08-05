@@ -1,8 +1,6 @@
 gymnasium == 0.29.1
+torch == 2.2.2
 numpy == 1.26.4
 tqdm == 4.66.1
-torch
-matplotlib
-gymnasium[box2d]
-opencv-python
-stable-baselines3[extra]
+matplotlib == 3.9.1
+mujoco == 3.2.0

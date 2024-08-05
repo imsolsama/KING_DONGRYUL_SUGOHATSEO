@@ -1,83 +1,99 @@
 import argparse
 import gymnasium as gym
 import torch
-from itertools import count
+import json
+from assets import PPO as PPO, device
+import numpy as np
 from tqdm import tqdm
-from assets import DQNAgent, device
+import matplotlib.pyplot as plt
+
+def get_activation_fn(name):
+    if name == "tanh":
+        return torch.tanh
+    elif name == "relu":
+        return torch.relu
+    elif name == "sigmoid":
+        return torch.sigmoid
+    else:
+        raise ValueError(f"Unknown activation function: {name}")
 
 def main(args):
-    env = gym.make('LunarLander-v2', render_mode='None')
-    state_size = env.observation_space.shape[0]
+    with open("config.json") as f:
+        config = json.load(f)
+
+    activation_fn = get_activation_fn(config["activation_fn"])
     
-    if isinstance(env.action_space, gym.spaces.Discrete):
-        action_size = env.action_space.n
-    elif isinstance(env.action_space, gym.spaces.Box):
-        action_size = env.action_space.shape[0]
-    else:
-        raise ValueError("Unsupported action space type")
+    env = gym.make("Hopper-v4")
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    agent = PPO(
+        state_dim,
+        action_dim,
+        hidden_dims=config['hidden_dims'],
+        activation_fn=activation_fn,
+        n_steps=config["n_steps"],
+        n_epochs=config["n_epochs"],
+        batch_size=config["batch_size"],
+        policy_lr=config["policy_lr"],
+        value_lr=config["value_lr"],
+        gamma=config["gamma"],
+        lmda=config["lmda"],
+        clip_ratio=config["clip_ratio"],
+        vf_coef=config["vf_coef"],
+        ent_coef=config["ent_coef"],
+    )
+    episodes = 500
 
-    agent = DQNAgent(state_size, action_size, args.eps_start, args.eps_end, args.eps_decay, args.gamma, args.lr, args.batch_size, args.tau)
+    rewards = []
+    avg_rewards = []
+    plt.ion()
+    fig, ax = plt.subplots()
+    line, = ax.plot(rewards, label="Total Reward")
+    avg_line, = ax.plot(avg_rewards, label="10-Episode Avg Reward")
+    ax.set_xlim(0, episodes)
+    ax.set_ylim(-300, 300)
+    ax.legend()
 
-    for i_episode in tqdm(range(args.episodes)):
-        state, info = env.reset()
-        state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+    for i_episode in tqdm(range(episodes)):
+        state, info = env.reset(seed=args.seed)
         total_reward = 0
-        for t in count():
-            action = agent.select_action(state)
-            observation, reward, terminated, truncated, _ = env.step(action.item())
+        for t in range(args.max_timesteps):
+            action, log_prob = agent.select_action(state)
+            next_state, reward, terminated, truncated, _ = env.step(action)
             total_reward += reward
+            transition = (state, action, reward, next_state, terminated)
+            
+            agent.step(transition)
 
-            reward = torch.tensor([reward], device=device)
-            done = terminated or truncated
-
-            if done and terminated:
-                next_state = None
-            else:
-                next_state = torch.tensor(observation, dtype=torch.float32, device=device).unsqueeze(0)
-
-            agent.memory.push(state, action, next_state, reward)
-
+            if terminated or truncated:
+                break
             state = next_state
 
-            agent.optimize_model()
+        rewards.append(total_reward)
+        if len(rewards) >= 10:
+            avg_rewards.append(np.mean(rewards[-10:]))
+        else:
+            avg_rewards.append(np.mean(rewards))
 
-            target_net_state_dict = agent.target_net.state_dict()
-            policy_net_state_dict = agent.policy_net.state_dict()
-            for key in policy_net_state_dict:
-                target_net_state_dict[key] = policy_net_state_dict[key] * args.tau + target_net_state_dict[key] * (1 - args.tau)
-            agent.target_net.load_state_dict(target_net_state_dict)
+        line.set_ydata(rewards)
+        line.set_xdata(range(len(rewards)))
+        avg_line.set_ydata(avg_rewards)
+        avg_line.set_xdata(range(len(avg_rewards)))
+        ax.relim()
+        ax.autoscale_view()
+        plt.draw()
+        plt.pause(0.01)
+        print(f"Episode {i_episode}, Total Reward: {total_reward}")
 
-            if done:
-                if terminated and total_reward >= 200:  # 성공적인 착지로 간주
-                    print(f"Episode {i_episode}: Successful landing! Total reward: {total_reward}")
-                else:
-                    print(f"Episode {i_episode}: Crash or failure. Total reward: {total_reward}")
-                agent.episode_rewards.append(total_reward)
-                agent.plot_rewards()
-                break
+    plt.ioff()
+    plt.show()
 
-        if i_episode % args.target_update == 0:
-            agent.update_target_net()
+    torch.save(agent.policy.state_dict(), args.save_path)
 
-    print('Complete')
-
-    # 모델 저장
-    agent.policy_net.to('cpu')
-    print('now save!')
-    torch.save(agent.policy_net.state_dict(), args.save_path)
-    agent.policy_net.to(device)
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--episodes', type=int, default=100, help='Number of episodes to train the agent')
-    parser.add_argument('--eps_start', type=float, default=0.9, help='Starting value of epsilon for epsilon-greedy policy')
-    parser.add_argument('--eps_end', type=float, default=0.05, help='Ending value of epsilon for epsilon-greedy policy')
-    parser.add_argument('--eps_decay', type=int, default=200, help='Epsilon decay factor')
-    parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor')
-    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
-    parser.add_argument('--tau', type=float, default=0.005, help='Soft update coefficient for target network')
-    parser.add_argument('--target_update', type=int, default=10, help='Number of episodes between target network updates')
-    parser.add_argument('--save_path', type=str, default='dqn_lunarlander.pth', help='Path to save the trained model')
+    parser.add_argument("--max_timesteps", type=int, default=1500, help="Maximum timesteps per episode")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--save_path", type=str, default="ppo_hopper.pth", help="Path to save the trained model")
     args = parser.parse_args()
     main(args)
